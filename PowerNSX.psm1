@@ -20756,6 +20756,132 @@ function Remove-NsxIpSetMember  {
     end {}
 }
 
+function Remove-NsxFirewallRuleMember  {
+    <#
+    .SYNOPSIS
+    Removes a member from an existing firewall rule.
+
+    .DESCRIPTION
+    Blah Blah NSX Firewall rule, remove member blah blah blah
+
+    #>
+
+    [CmdletBinding()]
+    param (
+
+        [Parameter (Mandatory=$true,ValueFromPipeline=$true,Position=1)]
+            #Existing IPSet PowerNSX object to be modified.
+            [ValidateNotNullOrEmpty()]
+            [System.Xml.XmlElement]$FirewallRule,
+        [Parameter (Mandatory=$true)]
+            #Ip addresses/ranges and/or CIDR's to be removed from the ipset.
+            [ValidateNotNullOrEmpty()]
+            [string[]]$IPAddress,
+        [Parameter (Mandatory=$False)]
+            #PowerNSX Connection object
+            [ValidateNotNullOrEmpty()]
+            [PSCustomObject]$Connection=$defaultNSXConnection
+    )
+
+    begin {}
+    process {
+
+        # $FirewallRule | format-xml
+        # $sectionId = $FirewallRule.sectionId
+        # $section = get-nsxFirewallSection -objectId $sectionId
+        # $generationNumber = $section.generationNumber
+        # $generationNumber = $FirewallRule.filteredfirewallConfiguration.layer3Sections.section.generationNumber
+        # write-host -ForegroundColor yellow "Generation Number: $generationNumber"
+        $_firewallrule = $FirewallRule.clonenode($true)
+
+        if  (invoke-xpathquery -QueryMethod SelectSingleNode -Node $_firewallrule -query "child::destinations") {
+            $destinations = $_firewallrule.destinations
+            $DstIPToRemove = (Invoke-XPathQuery -QueryMethod SelectSingleNode -Node $_firewallrule -Query "descendant::destination[value=`"$IPAddress`"]")
+            if ( -not $DstIPToRemove ) {
+                # throw "Pool $poolId is not defined on Load Balancer $edgeid."
+                write-debug "$IPAddress does not exist in the destination of this rule"
+            } else {
+                $destinations.RemoveChild( $DstIPToRemove ) | out-null
+                write-host "    --> Removing $IPAddress from destination of rule $($FirewallRule.id)"
+                $script:modified = $true
+            }
+        }
+
+        if  (invoke-xpathquery -QueryMethod SelectSingleNode -Node $_firewallrule -query "child::sources") {
+            $sources = $_firewallrule.sources
+            $SrcIPToRemove = (Invoke-XPathQuery -QueryMethod SelectSingleNode -Node $_firewallrule -Query "descendant::source[value=`"$IPAddress`"]")
+            if ( -not $SrcIPToRemove ) {
+                # throw "Pool $poolId is not defined on Load Balancer $edgeid."
+                write-debug "$IPAddress does not exist in the source of this rule"
+            } else {
+                $sources.RemoveChild( $SrcIPToRemove ) | out-null
+                write-host "    --> Removing $IPAddress from source of rule $($FirewallRule.id)"
+                $script:modified = $true
+            }
+        }
+
+        if ( $script:modified ) {
+#             $_ipset.value = $ValCollection -join ","
+#             #Do the post
+            $body = $_firewallrule.OuterXml
+            $body | format-xml
+            # $sectionId = $FirewallRule.sectionId
+            $section = get-nsxFirewallSection -objectId $FirewallRule.sectionId
+            $generationNumber = $section.generationNumber
+            $IfMatchHeader = @{"If-Match"=$generationNumber}
+            $URI = "/api/4.0/firewall/globalroot-0/config/layer3sections/$($FirewallRule.sectionId)/rules/$($FirewallRule.id)"
+            # $URI
+            $response = invoke-nsxwebrequest -method "put" -uri $URI -body $body -extraheader $IfMatchHeader -connection $connection
+
+            try {
+                [system.xml.xmldocument]$content = $response.content
+            }
+            catch {
+                throw "API call to NSX was successful, but was unable to interpret NSX API response as xml."
+            }
+
+        }
+
+        $_firewallrule | format-xml
+
+        # if ( -not (invoke-xpathquery -QueryMethod SelectSingleNode -Node $_firewallrule -query "child::sources")) {
+        #     throw "Firewall Rule $($FirewallRule.name) has no sources."
+        # }
+
+#         if ( $_ipset.value -eq "" ) {
+#             throw "IPSet $($ipset.name) has no members."
+#         }
+
+#         [system.collections.arraylist]$ValCollection = $_ipset.value -split ","
+#         $modified = $false
+#         foreach ( $value in $IPAddress ) {
+#             if ( -not ( $valcollection -contains $value )) {
+#                 write-warning "$Value $value not a member of IPSet $($ipset.name)"
+#             }
+#             else {
+#                 $modified = $true
+#                 $ValCollection.Remove($value)
+#             }
+#         }
+
+#         if ( $modified ) {
+#             $_ipset.value = $ValCollection -join ","
+#             #Do the post
+#             $body = $_ipset.OuterXml
+#             $URI = "/api/2.0/services/ipset/$($_ipset.objectId)"
+#             $response = invoke-nsxwebrequest -method "put" -uri $URI -body $body -connection $connection
+#             try {
+#                 [system.xml.xmldocument]$ipsetdoc = $response.content
+#                 $ipsetdoc.ipset
+#             }
+#             catch {
+#                 throw "Unable to interpret response content from NSX API as XML.  Response: $response"
+#             }
+#         }
+    }
+    end {}
+}
+
 function Remove-NsxIpPool {
 
     <#
@@ -21914,6 +22040,54 @@ function Get-NsxApplicableMember {
 
 ###Private functions
 
+function New-NsxIpSourceDestNode {
+
+    #Internal function - Handles building the source/dest xml node for a IP Addresses.
+
+    param (
+
+        [Parameter (Mandatory=$true)]
+            [ValidateSet ("source","destination")]
+            [string]$itemType,
+        # [object[]]$itemlist,
+        [Parameter (Mandatory=$true)]
+            #Collection of ip addresses/ranges and/or CIDR's to be added to the ipset.
+            [ValidateNotNullOrEmpty()]
+            [string[]]$IPAddress,
+        [System.XML.XMLDocument]$xmlDoc,
+        [switch]$negateItem
+    )
+
+    #The excluded attribute indicates source/dest negation
+    $xmlAttrNegated = $xmlDoc.createAttribute("excluded")
+    if ( $negateItem ) {
+        $xmlAttrNegated.value = "true"
+    } else {
+        $xmlAttrNegated.value = "false"
+    }
+
+    #Create return element and append negation attribute.
+    if ( $itemType -eq "Source" ) { [System.XML.XMLElement]$xmlReturn = $XMLDoc.CreateElement("sources") }
+    if ( $itemType -eq "Destination" ) { [System.XML.XMLElement]$xmlReturn = $XMLDoc.CreateElement("destinations") }
+    $xmlReturn.Attributes.Append($xmlAttrNegated) | out-null
+
+    foreach ( $value in $IPAddress ) {
+        write-debug "$($MyInvocation.MyCommand.Name) : Building source/dest node for $($value)"
+        #Build the return XML element
+        [System.XML.XMLElement]$xmlItem = $XMLDoc.CreateElement($itemType)
+
+        Add-XmlElement -xmlRoot $xmlItem -xmlElementName "value" -xmlElementText $value
+        # Add-XmlElement -xmlRoot $xmlItem -xmlElementName "name" -xmlElementText $item.name
+        Add-XmlElement -xmlRoot $xmlItem -xmlElementName "type" -xmlElementText "Ipv4Address"
+
+        $xmlReturn.appendChild($xmlItem) | out-null
+    }
+
+
+    $xmlReturn
+
+}
+
 function New-NsxSourceDestNode {
 
     #Internal function - Handles building the source/dest xml node for a given object.
@@ -22446,16 +22620,17 @@ function Get-NsxFirewallRule {
             #'filteredfirewallConfiguration'.  Why? :|
 
             $response = invoke-nsxrestmethod -method "get" -uri $URI -connection $connection
-            if ($response.firewallConfiguration) {
-                if ( $PsBoundParameters.ContainsKey("Name") ) {
-                    $response.firewallConfiguration.layer3Sections.Section.rule | ? { $_.name -eq $Name }
-                }
-                else {
-                    $response.firewallConfiguration.layer3Sections.Section.rule
-                }
+            # if ($response.firewallConfiguration) {
+            #     if ( $PsBoundParameters.ContainsKey("Name") ) {
+            #         $response.firewallConfiguration.layer3Sections.Section.rule | ? { $_.name -eq $Name }
+            #     }
+            #     else {
+            #         $response.firewallConfiguration.layer3Sections.Section.rule
+            #     }
 
-            }
-            elseif ( $response.filteredfirewallConfiguration ) {
+            # }
+            # elseif ( $response.filteredfirewallConfiguration ) {
+            if ( $response.filteredfirewallConfiguration ) {
                 if ( $PsBoundParameters.ContainsKey("Name") ) {
                     $response.filteredfirewallConfiguration.layer3Sections.Section.rule | ? { $_.name -eq $Name }
                 }
@@ -22523,11 +22698,19 @@ function New-NsxFirewallRule  {
             [ValidateSet("inout","in","out")]
             [string]$Direction="inout",
         [Parameter (Mandatory=$false)]
+            #Collection of ip addresses/ranges and/or CIDR's to be added to the ipset.
+            [ValidateNotNullOrEmpty()]
+            [string[]]$SrcIPAddress,
+        [Parameter (Mandatory=$false)]
             [ValidateScript({ Validate-FirewallRuleSourceDest $_ })]
             [object[]]$Source,
         [Parameter (Mandatory=$false)]
             [ValidateNotNullOrEmpty()]
             [switch]$NegateSource,
+        [Parameter (Mandatory=$false)]
+            #Collection of ip addresses/ranges and/or CIDR's to be added to the ipset.
+            [ValidateNotNullOrEmpty()]
+            [string[]]$DstIPAddress,
         [Parameter (Mandatory=$false)]
             [ValidateScript({ Validate-FirewallRuleSourceDest $_ })]
             [object[]]$Destination,
@@ -22604,16 +22787,25 @@ function New-NsxFirewallRule  {
         }
 
         #Build Sources Node
-        if ( $source ) {
-            $xmlSources = New-NsxSourceDestNode -itemType "source" -itemlist $source -xmlDoc $xmlDoc -negateItem:$negateSource
+        if ( ( $SrcIPAddress ) ) {
+            $xmlSources = New-NsxIpSourceDestNode -itemType "source" -IPAddress $SrcIPAddress -xmlDoc $xmlDoc -negateItem:$negateSource
             $xmlRule.appendChild($xmlSources) | out-null
         }
+        # if ( $source ) {
+        #     $xmlSources = New-NsxSourceDestNode -itemType "source" -itemlist $source -xmlDoc $xmlDoc -negateItem:$negateSource
+        #     $xmlRule.appendChild($xmlSources) | out-null
+        # }
 
         #Destinations Node
-        if ( $destination ) {
-            $xmlDestinations = New-NsxSourceDestNode -itemType "destination" -itemlist $destination -xmlDoc $xmlDoc -negateItem:$negateDestination
+        if ( ( $DstIPAddress ) ) {
+            $xmlDestinations = New-NsxIpSourceDestNode -itemType "destination" -IPAddress $DstIPAddress -xmlDoc $xmlDoc -negateItem:$negateSource
             $xmlRule.appendChild($xmlDestinations) | out-null
         }
+
+        # if ( $destination ) {
+        #     $xmlDestinations = New-NsxSourceDestNode -itemType "destination" -itemlist $destination -xmlDoc $xmlDoc -negateItem:$negateDestination
+        #     $xmlRule.appendChild($xmlDestinations) | out-null
+        # }
 
         #Services
         if ( $service) {

@@ -265,6 +265,7 @@ FunctionsToExport = @(
     'Get-NsxFirewallRule',
     'New-NsxFirewallRule',
     'Remove-NsxFirewallRule',
+    'Remove-NsxFirewallRuleMember',
     'Get-NsxLoadBalancer',
     'Set-NsxLoadBalancer',
     'Get-NsxLoadBalancerMonitor',
