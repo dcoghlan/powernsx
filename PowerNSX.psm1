@@ -20786,6 +20786,7 @@ function Remove-NsxFirewallRuleMember  {
     begin {}
     process {
 
+        $script:modified = $False
         # $FirewallRule | format-xml
         # $sectionId = $FirewallRule.sectionId
         # $section = get-nsxFirewallSection -objectId $sectionId
@@ -20824,25 +20825,25 @@ function Remove-NsxFirewallRuleMember  {
 #             $_ipset.value = $ValCollection -join ","
 #             #Do the post
             $body = $_firewallrule.OuterXml
-            $body | format-xml
+            # $body | format-xml
             # $sectionId = $FirewallRule.sectionId
             $section = get-nsxFirewallSection -objectId $FirewallRule.sectionId
             $generationNumber = $section.generationNumber
             $IfMatchHeader = @{"If-Match"=$generationNumber}
             $URI = "/api/4.0/firewall/globalroot-0/config/layer3sections/$($FirewallRule.sectionId)/rules/$($FirewallRule.id)"
             # $URI
-            $response = invoke-nsxwebrequest -method "put" -uri $URI -body $body -extraheader $IfMatchHeader -connection $connection
+            $response = invoke-nsxwebrequest -method "put" -uri $URI -body $body -extraheader $IfMatchHeader -connection $connection | out-null
 
-            try {
-                [system.xml.xmldocument]$content = $response.content
-            }
-            catch {
-                throw "API call to NSX was successful, but was unable to interpret NSX API response as xml."
-            }
+            # try {
+            #     [system.xml.xmldocument]$content = $response.content
+            # }
+            # catch {
+            #     throw "API call to NSX was successful, but was unable to interpret NSX API response as xml."
+            # }
 
         }
 
-        $_firewallrule | format-xml
+        # $_firewallrule | format-xml
 
         # if ( -not (invoke-xpathquery -QueryMethod SelectSingleNode -Node $_firewallrule -query "child::sources")) {
         #     throw "Firewall Rule $($FirewallRule.name) has no sources."
