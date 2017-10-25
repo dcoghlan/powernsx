@@ -99,6 +99,7 @@ $SecurityGroupExportFile = "$TempDir\SecurityGroupExport.xml"
 $SecurityTagExportFile = "$TempDir\SecurityTagExport.xml"
 $DfwRuleExportFile = "$TempDir\DfwRuleExport.xml"
 $SecPolExportFile = "$TempDir\SecPolExport.xml"
+$SecurityGroupApplicableMemberExportFile = "$TempDir\SecurityGroupApplicableMember.xml"
 
 $LsHash = @{}
 $VdPortGroupHash = @{}
@@ -115,6 +116,7 @@ $SecurityGroupHash = @{}
 $SecurityTagHash = @{}
 $DfwRuleHash = @{}
 $SecPolHash = @{}
+$SecurityGroupApplicableMemberHash = @{}
 
 write-host -ForeGroundColor Green "PowerNSX Object Capture Script"
 
@@ -166,67 +168,67 @@ $Controllers | % {
 }
 
 
-write-host "  Getting VMs"
-Get-Vm -server $connection.ViConnection| % {
-
-    $IsManager = $false
-    $IsEdge = $false
-    $IsLogicalRouter = $false
-    $IsController = $false
-    $Nics = @()
-
-    #Tag any edge, DLR or controller vms...
-    $moref = $_.id.replace("VirtualMachine-","")
-    if ( $Edges.appliances.appliance.vmid ) {
-        if ( $Edges.appliances.appliance.vmid.Contains($moref) ) {
-            $IsEdge = $true
+    write-host "  Getting VMs"
+    Get-Vm -server $connection.ViConnection| % {
+    
+        $IsManager = $false
+        $IsEdge = $false
+        $IsLogicalRouter = $false
+        $IsController = $false
+        $Nics = @()
+    
+        #Tag any edge, DLR or controller vms...
+        $moref = $_.id.replace("VirtualMachine-","")
+        if ( $Edges.appliances.appliance.vmid ) {
+            if ( $Edges.appliances.appliance.vmid.Contains($moref) ) {
+                $IsEdge = $true
+            }
         }
+        if ( $LogicalRouters.appliances.appliance.vmid ) {
+            if ( $LogicalRouters.appliances.appliance.vmid.Contains($moref) ) {
+                $IsLogicalRouter = $true
+            }
+        }
+        if ( $Controllers.virtualMachineInfo.objectId ) {
+            if ( $Controllers.virtualMachineInfo.objectId.Contains($moref) ) {
+                $IsController = $true
+            }
+        }
+    
+        #NSX Keeps some metadata about Managers and Edges (not controllers) in the extraconfig data of the associated VMs.
+        $configview = $_ | Get-View -Property Config
+        $NSXAppliance = ($configview.Config.ExtraConfig | ? { $_.key -eq "vshield.vmtype" }).Value
+        If ( $NSXAppliance -eq "Manager" )  {
+            $IsManager = $true
+        }
+    
+        $_ | Get-NetworkAdapter -server $connection.ViConnection | % {
+            If ( $_.ExtensionData.Backing.Port.PortgroupKey ) {
+                $PortGroup = $_.ExtensionData.Backing.Port.PortgroupKey;
+            }
+            elseif ( $_.NetworkName ) {
+                $PortGroup = $_.NetworkName;
+            }
+            else {
+                #No nic attachment
+                Break
+            }
+            $Nics += [pscustomobject]@{
+                "PortGroup" = $PortGroup
+                "MacAddress" = $_.MacAddress
+            }
+        }
+    
+        $VmHash.Add($Moref, [pscustomobject]@{
+            "MoRef" = $MoRef;
+            "Name" = $_.name ;
+            "Nics" = $Nics;
+            "IsManager" = $IsManager;
+            "IsEdge" = $IsEdge;
+            "IsLogicalRouter" = $IsLogicalRouter;
+            "IsController" = $IsController;
+            "ToolsIp" = $_.Guest.Ipaddress })
     }
-    if ( $LogicalRouters.appliances.appliance.vmid ) {
-        if ( $LogicalRouters.appliances.appliance.vmid.Contains($moref) ) {
-            $IsLogicalRouter = $true
-        }
-    }
-    if ( $Controllers.virtualMachineInfo.objectId ) {
-        if ( $Controllers.virtualMachineInfo.objectId.Contains($moref) ) {
-            $IsController = $true
-        }
-    }
-
-    #NSX Keeps some metadata about Managers and Edges (not controllers) in the extraconfig data of the associated VMs.
-    $configview = $_ | Get-View -Property Config
-    $NSXAppliance = ($configview.Config.ExtraConfig | ? { $_.key -eq "vshield.vmtype" }).Value
-    If ( $NSXAppliance -eq "Manager" )  {
-        $IsManager = $true
-    }
-
-    $_ | Get-NetworkAdapter -server $connection.ViConnection | % {
-        If ( $_.ExtensionData.Backing.Port.PortgroupKey ) {
-            $PortGroup = $_.ExtensionData.Backing.Port.PortgroupKey;
-        }
-        elseif ( $_.NetworkName ) {
-            $PortGroup = $_.NetworkName;
-        }
-        else {
-            #No nic attachment
-            Break
-        }
-        $Nics += [pscustomobject]@{
-            "PortGroup" = $PortGroup
-            "MacAddress" = $_.MacAddress
-        }
-    }
-
-    $VmHash.Add($Moref, [pscustomobject]@{
-        "MoRef" = $MoRef;
-        "Name" = $_.name ;
-        "Nics" = $Nics;
-        "IsManager" = $IsManager;
-        "IsEdge" = $IsEdge;
-        "IsLogicalRouter" = $IsLogicalRouter;
-        "IsController" = $IsController;
-        "ToolsIp" = $_.Guest.Ipaddress })
-}
 
 write-host "  Getting IP and MAC details from Spoofguard"
 Get-NsxSpoofguardPolicy -connection $connection | Get-NsxSpoofguardNic -connection $connection | % {
@@ -273,6 +275,15 @@ Get-NsxSecurityPolicy -connection $connection | % {
     $SecPolHash.Add($_.objectId, $_.outerxml)
 }
 
+write-host "  Getting Security Group Applicable Members"
+foreach ($scope in 'universalroot-0','globalroot-0'){
+    $URI = "/api/2.0/services/securitygroup/scope/$scope/members/"
+    [System.Xml.XmlDocument]$response = invoke-nsxrestmethod -method "get" -uri $URI  -connection $connection 
+    $response.list.basicinfo | % {
+        $SecurityGroupApplicableMemberHash.Add($_.objectid, $_.outerxml)
+    }
+}
+
 
 write-host  -ForeGroundColor Green "`nCreating Object Export Bundle"
 
@@ -292,6 +303,7 @@ $SecurityGroupHash | export-clixml -depth $maxdepth $SecurityGroupExportFile
 $SecurityTagHash | export-clixml -depth $maxdepth $SecurityTagExportFile
 $DfwRuleHash | export-clixml -depth $maxdepth $DfwRuleExportFile
 $SecPolHash | export-clixml -depth $maxdepth $SecPolExportFile
+$SecurityGroupApplicableMemberHash | Export-Clixml -Depth $maxdepth $SecurityGroupApplicableMemberExportFile
 
 #Desktop extract to zip
 if ($psversiontable.PSEdition -ne "Core"){
